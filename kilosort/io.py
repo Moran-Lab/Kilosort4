@@ -30,14 +30,14 @@ def find_binary(data_dir: Union[str, os.PathLike]) -> Path:
                 + list(data_dir.glob('*.dat')) + list(data_dir.glob('*.raw'))
     if len(filenames) == 0:
         raise FileNotFoundError(
-            f'No binary file found in {data_dir}. Expected extensions are:\n'
+            'No binary file found in folder. Expected extensions are:\n'
             '*.bin, *.bat, *.dat, or *.raw.'
             )
 
     # TODO: Why give this preference? Not all binary files will have this tag.
     # If there are multiple binary files, find one with "ap" tag
     if len(filenames) > 1:
-        filenames = [f for f in filenames if 'ap.bin' in f.as_posix()]
+        filenames = [f for f in filenames if 'ap' in f.as_posix()]
 
     # If there is still more than one, raise an error, user needs to specify
     # full path.
@@ -63,10 +63,8 @@ def load_probe(probe_path):
         # !DOES NOT WORK FOR PHASE3A PROBES WITH DISCONNECTED CHANNELS!
         # Also does not remove reference channel in PHASE3B probes
         contents = probe_path.read_text()
-        metadata = {'np': np}
+        metadata = {}
         exec(contents, {}, metadata)
-        # TODO: Figure out an alternative for exec, it's a security risk.
-
         probe['chanMap'] = []
         probe['xc'] = []
         probe['yc'] = []
@@ -111,15 +109,8 @@ def load_probe(probe_path):
                 dtype = np.int32 if k == 'chanMap' else np.float32
                 probe[k] = np.array(v, dtype=dtype)
 
-    else:
-        raise ValueError(
-            f"Unrecognized extension for probe: {probe_path.name}\n"
-            "Recognized extensions are .mat, .prb, or .json."
-            )
-
     for n in required_keys:
-        if n not in probe.keys():
-            raise ValueError(f'Missing required key: {n} after loading probe.')
+        assert n in probe.keys()
 
     # Verify that all arrays have the same size.
     size = None
@@ -177,175 +168,13 @@ def save_probe(probe_dict, filepath):
                     f"All probe variables must have the same length."
                 )
 
-    # Create parent directories if they do not exist, then save probe.
-    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, 'w') as f:
         f.write(json.dumps(d))
-
-
-def remove_bad_channels(probe, bad_channels):
-    """Creates a new probe dictionary with listed channels (data rows) removed.
-    
-    Parameters
-    ----------
-    probe : dict.
-        A Kilosort4 probe dictionary, as returned by `kilosort.io.load_probe`.
-    bad_channels : list.
-        A list of channel indices (rows in the binary file) that should not be
-        included in sorting. Listing channels here is equivalent to excluding
-        them from the probe dictionary.
-
-    Returns
-    -------
-    probe : dict.
-    
-    """
-    probe = probe.copy()
-
-    bad_idx = np.empty_like(bad_channels, dtype=int)
-    for i, k in enumerate(bad_channels):
-        try:
-            idx = np.where(probe['chanMap'] == k)[0][0]
-        except IndexError:
-            raise IndexError(f"Channel '{k}' was not in probe['chanMap']")
-        bad_idx[i] = idx
-    probe['xc'] = np.delete(probe['xc'], bad_idx)
-    probe['yc'] = np.delete(probe['yc'], bad_idx)
-    probe['kcoords'] = np.delete(probe['kcoords'], bad_idx)
-    probe['chanMap'] = np.delete(probe['chanMap'], bad_idx)
-    probe['n_chan'] = probe['n_chan'] - bad_idx.size
-
-    return probe
 
 
 def save_to_phy(st, clu, tF, Wall, probe, ops, imin, results_dir=None,
                 data_dtype=None, save_extra_vars=False,
                 save_preprocessed_copy=False):
-    """Save sorting results to disk in a format readable by Phy.
-
-    Parameters
-    ----------
-    st : np.ndarray
-        3-column array of peak time (in samples), template, and amplitude for
-        each spike.
-    clu : np.ndarray
-        1D vector of cluster ids indicating which spike came from which cluster,
-        same shape as `st[:,0]`.
-    tF : torch.Tensor
-        PC features for each spike, with shape
-        (n_spikes, nearest_chans, n_pcs)
-    Wall : torch.Tensor
-        PC feature representation of spike waveforms for each cluster, with shape
-        (n_clusters, n_channels, n_pcs).
-    probe : dict; optional.
-        A Kilosort4 probe dictionary, as returned by `kilosort.io.load_probe`.
-    ops : dict
-        Dictionary storing settings and results for all algorithmic steps.
-    imin : int
-        Minimum sample index used by BinaryRWFile, exported spike times will
-        be shifted forward by this number.
-    results_dir : pathlib.Path; optional.
-        Directory where results should be saved.
-    data_dtype : str or type; optional.
-        dtype of data in binary file, like `'int32'` or `np.uint16`. By default,
-        dtype is assumed to be `'int16'`.
-    save_extra_vars : bool; default=False.
-        If True, save tF and Wall to disk along with copies of st, clu and
-        amplitudes with no postprocessing applied.
-    save_preprocessed_copy : bool; default=False.
-        If True, save a pre-processed copy of the data (including drift
-        correction) to `temp_wh.dat` in the results directory and format Phy
-        output to use that copy of the data.
-    
-    Returns
-    -------
-    results_dir : pathlib.Path.
-        Directory where results are saved.
-    similar_templates : np.ndarray.
-        Similarity score between each pair of clusters, computed as correlation
-        between clusters. Shape (n_clusters, n_clusters).
-    is_ref : np.ndarray.
-        1D boolean array with shape (n_clusters,) indicating whether each
-        cluster is refractory.
-    est_contam_rate : np.ndarray.
-        Contamination rate for each cluster, computed as fraction of refractory
-        period violations relative to expectation based on a Poisson process.
-        Shape (n_clusters,).
-    kept_spikes : np.ndarray.
-        Boolean mask with shape (n_spikes,) that is False for spikes that were
-        removed by `kilosort.postprocessing.remove_duplicate_spikes`
-        and True otherwise.
-
-    Notes
-    -----
-    The following files will be saved in `results_dir`. Note that 'template'
-    here does *not* refer to the universal or learned templates used for spike
-    detection, as it did in some past versions of Kilosort. Instead, it refers
-    to the average spike waveform (after whitening, filtering, and drift
-    correction) for all spikes assigned to each cluster, which are template-like
-    in shape. We use the term 'template' anyway for this section because that is
-    how they are treated in Phy. Elsewhere in the Kilosort4 code, we would refer
-    to these as 'clusters.'
-
-    amplitudes.npy : shape (n_spikes,)
-        Per-spike amplitudes, computed as the L2 norm of the PC features
-        for each spike.
-    channel_map.npy : shape (n_channels,)
-        Same as probe['chanMap']. Integer indices into rows of binary file
-        that map the data to the contacts listed in the probe file.
-    channel_positions.npy : shape (n_channels,2)
-        Same as probe['xc'] and probe['yc'], but combined in a single array.
-        Indicates x- and y- positions (in microns) of probe contacts.
-    channel_shanks.npy : shape (n_channels,)
-        Indicates shank index for each channel on the probe.
-    cluster_Amplitude.tsv : shape (n_templates,)
-        Per-template amplitudes, computed as the L2 norm of the template.
-    cluster_ContamPct.tsv : shape (n_templates,)
-        Contamination rate for each template, computed as fraction of refractory
-        period violations relative to expectation based on a Poisson process.
-    cluster_KSLabel.tsv : shape (n_templates,)
-        Label indicating whether each template is 'mua' (multi-unit activity)
-        or 'good' (refractory).
-    cluster_group.tsv : shape (n_templates,)
-        Same as `cluster_KSLabel.tsv`.
-    kept_spikes.npy : shape (n_spikes,)
-        Boolean mask that is False for spikes that were removed by
-        `kilosort.postprocessing.remove_duplicate_spikes` and True otherwise.
-    ops.npy : shape N/A
-        Dictionary containing a number of state variables saved throughout
-        the sorting process (see `run_kilosort`). We recommend loading with
-        `kilosort.io.load_ops`.
-    params.py : shape N/A
-        Settings used by Phy, like data location and sampling rate.
-    similar_templates.npy : shape (n_templates, n_templates)
-        Similarity score between each pair of templates, computed as correlation
-        between templates.
-    spike_clusters.npy : shape (n_spikes,)
-        For each spike, integer indicating which template it was assigned to.
-    spike_templates.npy : shape (n_spikes,2)
-        Same as `spike_clusters.npy`.
-    spike_positions.npy : shape (n_spikes,2)
-        Estimated (x,y) position relative to probe geometry, in microns,
-        for each spike.
-    spike_times.npy : shape (n_spikes,)
-        Sample index of the waveform peak for each spike.
-    templates.npy : shape (n_templates, nt, n_channels)
-        Full time x channels template shapes.
-    templates_ind.npy : shape (n_templates, n_channels)
-        Channel indices on which each cluster is defined. For KS4, this is always
-        all channels, but Phy requires this file.
-    whitening_mat.npy : shape (n_channels, n_channels)
-        Matrix applied to data for whitening.
-    whitening_mat_inv.npy : shape (n_channels, n_channels)
-        Inverse of whitening matrix.
-    whitening_mat_dat.npy : shape (n_channels, n_channels)
-        matrix applied to data for whitening. Currently this is the same as
-        `whitening_mat.npy`, but was added because the latter was previously
-        altered before saving for Phy, so this ensured the original was still
-        saved. It's kept in for now because we may need to change the version
-        used by Phy again in the future.
-
-    """
 
     if results_dir is None:
         results_dir = ops['data_dir'].joinpath('kilosort4')
@@ -357,7 +186,6 @@ def save_to_phy(st, clu, tF, Wall, probe, ops, imin, results_dir=None,
     channel_positions = np.stack((probe['xc'], probe['yc']), axis=-1)
     np.save((results_dir / 'channel_map.npy'), chan_map)
     np.save((results_dir / 'channel_positions.npy'), channel_positions)
-    np.save((results_dir / 'channel_shanks.npy'), probe['kcoords'])
 
     # whitening matrix
     whitening_mat = ops['Wrot']
@@ -381,7 +209,7 @@ def save_to_phy(st, clu, tF, Wall, probe, ops, imin, results_dir=None,
     amplitudes = ((tF**2).sum(axis=(-2,-1))**0.5).cpu().numpy()
     # remove duplicate (artifact) spikes
     spike_times, spike_clusters, kept_spikes = remove_duplicates(
-        spike_times, spike_clusters, dt=ops['duplicate_spike_bins']
+        spike_times, spike_clusters, dt=ops['settings']['duplicate_spike_bins']
     )
     amp = amplitudes[kept_spikes]
     spike_templates = spike_templates[kept_spikes]
@@ -534,36 +362,6 @@ def load_ops(ops_path, device=None):
     return ops
 
 
-def bfile_from_ops(ops=None, ops_path=None, filename=None, device=None):
-    if device is None:
-        if torch.cuda.is_available():
-            device = torch.device('cuda')
-        else:
-            device = torch.device('cpu')
-
-    if ops is None:
-        if ops_path is not None:
-            ops = load_ops(ops_path, device=device)
-        else:
-            raise ValueError('Must specify either `ops` or `ops_path`.')
-    
-    if filename is None:
-        # Separate so that the same settings can be applied to the same binary
-        # file at a new path, like when running pytests.
-        filename = ops['filename']
-    
-    bfile = BinaryFiltered(
-        filename, ops['n_chan_bin'], fs=ops['fs'], NT=ops['batch_size'],
-        nt=ops['nt'], nt0min=ops['nt0min'], chan_map=ops['probe']['chanMap'],
-        hp_filter=ops['fwav'], whiten_mat=ops['Wrot'], dshift=ops['dshift'],
-        device=device, do_CAR=ops['do_CAR'], artifact_threshold=ops['artifact_threshold'],
-        invert_sign=ops['invert_sign'], dtype=ops['data_dtype'], tmin=ops['tmin'],
-        tmax=ops['tmax'], shift=ops['shift'], scale=ops['scale']
-        )
-
-    return bfile
-
-
 class BinaryRWFile:
 
     supported_dtypes = ['int16', 'uint16', 'int32', 'float32']
@@ -622,7 +420,7 @@ class BinaryRWFile:
                 {self.supported_dtypes}
                 """
             warnings.warn(message, RuntimeWarning)
-
+#Mayshafiki
         # Must come after dtype since dtype is necessary for nbytesread
         if file_object is None:
             total_samples = get_total_samples(filename, n_chan_bin, dtype)
@@ -633,14 +431,8 @@ class BinaryRWFile:
 
         self.imin = max(int(tmin*fs), 0)
         self.imax = total_samples if tmax==np.inf else min(int(tmax*fs), total_samples)
-        self.n_batches = int(np.ceil(self.n_samples / self.NT))
 
-        # Check if last batch is too small. If so, drop those samples.
-        a, b = self.get_batch_edges(self.n_batches-1)
-        batch_size = int(b - a - self.nt)  # Unclear why this casts to float
-        if batch_size < self.nt:
-            self.n_batches -= 1
-            self.imax -= batch_size
+        self.n_batches = int(np.ceil(self.n_samples / self.NT))
 
         mode = 'w+' if write else 'r'
         # Must use total samples for file shape, otherwise the end of the data
@@ -759,7 +551,11 @@ class BinaryRWFile:
 
         return tuple(new_idx)
 
-    def get_batch_edges(self, ibatch):
+    def padded_batch_to_torch(self, ibatch, return_inds=False):
+        """ read batches from file """
+        if self.file is None:
+            raise ValueError('Binary file has been closed, data not accessible.')
+
         if ibatch==0:
             bstart = self.imin
             bend = self.imin + self.NT + self.nt
@@ -770,15 +566,6 @@ class BinaryRWFile:
             ibatch = np.uint64(ibatch)
             bstart = np.uint64(self.imin + (ibatch * self.NT) - self.nt)
             bend = min(self.imax, np.uint64(bstart + self.NT + 2*self.nt))
-
-        return bstart, bend
-
-    def padded_batch_to_torch(self, ibatch, return_inds=False):
-        """ read batches from file """
-        if self.file is None:
-            raise ValueError('Binary file has been closed, data not accessible.')
-
-        bstart, bend = self.get_batch_edges(ibatch)
         data = self.file[bstart : bend]
         data = data.T
 
@@ -819,8 +606,26 @@ class BinaryRWFile:
         else:
             return X
         
-
-def get_total_samples(filename, n_channels, dtype=np.int16):
+# Mayshafiki
+#def get_total_samples(filename, n_channels, dtype=np.int16, tmin=None, tmax=None):
+#    """Count samples in binary file given dtype and number of channels."""
+#    bytes_per_value = np.dtype(dtype).itemsize
+#    bytes_per_sample = np.int64(bytes_per_value * n_channels)
+#    if tmin is not None and tmax is not None:
+#    	total_bytes = int(tmax*fs) - max(int(tmin*fs), 0)
+#    else:
+#    	total_bytes = os.path.getsize(filename)
+#    samples = (total_bytes / bytes_per_sample)
+#
+#    if samples%1 != 0:
+#        raise ValueError(
+#            "Bytes in binary file did not divide evenly, "
+#            "incorrect n_chan_bin ('number of channels' in GUI)."
+#        )
+#    else:
+#        return int(samples)
+        
+def get_total_samples(filename, n_channels, dtype=np.int16, tmin=None, tmax=None):
     """Count samples in binary file given dtype and number of channels."""
     bytes_per_value = np.dtype(dtype).itemsize
     bytes_per_sample = np.int64(bytes_per_value * n_channels)
@@ -884,7 +689,7 @@ class BinaryFileGroup:
             n_samples = f.shape[0]
             if time_idx.start < k:
                 # At least part of the data is in this file
-                t = slice(int(time_idx.start - shift), int(time_idx.stop - shift))
+                t = slice(time_idx.start - shift, time_idx.stop - shift)
                 data.append(f[t, channel_idx])
                 if time_idx.stop <= k:
                     # This is the end of the data to be retrieved
@@ -913,7 +718,7 @@ class BinaryFileGroup:
                           shape=(n_samples, n_channels))
             files.append(f)
         
-        return BinaryFileGroup(files)
+        return files
 
 
 class BinaryFiltered(BinaryRWFile):
