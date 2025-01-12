@@ -170,15 +170,6 @@ EXTRA_PARAMETERS = {
             """
     },
 
-    'highpass_cutoff': {
-        'gui_name': 'highpass cutoff', 'type': float, 'min': 0, 'max': np.inf,
-        'exclude': [], 'default': 300, 'step': 'preprocessing',
-        'description':
-            """
-            Critical frequency for highpass Butterworth filter applied to data.
-            """
-    },
-
     'binning_depth': {
         'gui_name': 'binning_depth', 'type': float, 'min': 0, 'max': np.inf,
         'exclude': [0], 'default': 5, 'step': 'preprocessing',
@@ -204,10 +195,9 @@ EXTRA_PARAMETERS = {
         'description':
             """
             Amount of gaussian smoothing to apply to the spatiotemporal drift
-            estimation, for correlation, time (units of registration blocks),
-            and y (units of batches) axes. The y smoothing has no effect
-            for `nblocks = 1`. Adjusting smoothing for the correlation axis
-            is not recommended.
+            estimation, for x,y,time axes in units of registration blocks
+            (for x,y axes) and batch size (for time axis). The x,y smoothing has
+            no effect for `nblocks = 1`.
             """
     },
 
@@ -289,7 +279,7 @@ EXTRA_PARAMETERS = {
 
     'max_channel_distance': {
         'gui_name': 'max channel distance', 'type': float, 'min': 1,
-        'max': np.inf, 'exclude': [], 'default': 32, 'step': 'spike detection',
+        'max': np.inf, 'exclude': [], 'default': None, 'step': 'spike detection',
         'description':
             """
             Templates farther away than this from their nearest channel will
@@ -385,29 +375,13 @@ EXTRA_PARAMETERS = {
 
 
     ### POSTPROCESSING
-    'duplicate_spike_ms': {
-        'gui_name': 'duplicate spike ms', 'type': float, 'min': 0, 'max': np.inf,
-        'exclude': [], 'default': 0.25, 'step': 'postprocessing',
+    'duplicate_spike_bins': {
+        'gui_name': 'duplicate spike bins', 'type': int, 'min': 0, 'max': np.inf,
+        'exclude': [], 'default': 7, 'step': 'postprocessing',
         'description':
             """
-            Time in ms for which subsequent spikes from the same cluster are
+            Number of bins for which subsequent spikes from the same cluster are
             assumed to be artifacts. A value of 0 disables this step.
-
-            NOTE: this was formerly handled by `duplicate_spike_bins`, which has
-            been deprecated. The new default of 0.25ms is equivalent to the old
-            default of 7 bins for a 30kHz sampling rate.
-            """
-    },
-
-    'position_limit': {
-        'gui_name': 'position limit', 'type': float, 'min': 0, 'max': np.inf,
-        'exclude': [], 'default': 100, 'step': 'postprocessing',
-        'description':
-            """
-            Maximum distance (in microns) between channels that can be used
-            to estimate spike positions in `postprocessing.compute_spike_positions`.
-            This does not affect spike sorting, only how positions are estimated
-            after sorting is complete.
             """
     },
 }
@@ -432,33 +406,3 @@ main_defaults = {k: v['default'] for k, v in MAIN_PARAMETERS.items()}
 extra_defaults = {k: v['default'] for k, v in EXTRA_PARAMETERS.items()}
 # In the format expected by `run_kilosort`
 DEFAULT_SETTINGS = {**main_defaults, **extra_defaults}
-
-
-def compare_settings(settings):
-    """Find settings values that differ from the defaults.
-    
-    Parameters
-    ----------
-    settings : dict
-        Formatted the same as `DEFAULT_SETTINGS`.
-    
-    Returns
-    -------
-    modified_settings : dict
-        Formatted as above, but only contains keys with values that differ
-        from the defaults.
-    extra_keys : list
-        List of keys that appear in `settings` but not `DEFAULT_SETTINGS`.
-        These keys are *not* included in `modified_settings`.
-
-    """
-    modified_settings = {}
-    extra_keys = []
-
-    for k, v in settings.items():
-        if k in DEFAULT_SETTINGS:
-            if v != DEFAULT_SETTINGS[k]:
-                modified_settings[k] = v
-        else:
-            extra_keys.append(k)
-    return modified_settings, extra_keys

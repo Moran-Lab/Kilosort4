@@ -19,13 +19,10 @@ logger = setup_logger(__name__)
 
 _DEFAULT_DTYPE = 'int16'
 _ALLOWED_FILE_TYPES = ['.bin', '.dat', '.bat', '.raw']  # For binary data
-_PROBE_SETTINGS = [
-    'nearest_chans', 'dmin', 'dminx', 'max_channel_distance', 'x_centers'
-    ]
 
 class SettingsBox(QtWidgets.QGroupBox):
     settingsUpdated = QtCore.Signal()
-    previewProbe = QtCore.Signal()
+    previewProbe = QtCore.Signal(object, object)
     dataChanged = QtCore.Signal()
 
     def __init__(self, parent):
@@ -34,7 +31,6 @@ class SettingsBox(QtWidgets.QGroupBox):
         self.gui = parent
         self.load_enabled = False
         self.use_file_object = False
-        self.path_check = None
         
         self.select_data_file = QtWidgets.QPushButton("Select Binary File")
         self.data_file_path = self.gui.data_path
@@ -68,19 +64,6 @@ class SettingsBox(QtWidgets.QGroupBox):
         self.probe_layout_selector = QtWidgets.QComboBox()
         self._probes = []
         self.populate_probe_selector()
-
-        self.bad_channels_text = QtWidgets.QLabel("Excluded channels:")
-        self.bad_channels_input = QtWidgets.QLineEdit()
-        if self.gui.qt_settings.contains('bad_channels'):
-            bad_channels = self.gui.qt_settings.value('bad_channels')
-            if bad_channels is not None:
-                # List of ints gets cached as list of strings, so have to convert.
-                self.bad_channels = [int(s) for s in bad_channels]
-                self.bad_channels_input.setText(str(self.bad_channels))
-            else:
-                self.bad_channels = []
-        else:
-            self.bad_channels = []
 
         self.dtype_selector_text = QtWidgets.QLabel("Data dtype:")
         self.dtype_selector = QtWidgets.QComboBox()
@@ -157,8 +140,6 @@ class SettingsBox(QtWidgets.QGroupBox):
         self.load_settings_button.clicked.connect(self.update_settings)
         layout.addWidget(self.load_settings_button, row_count, col1, rspan, dbl)
 
-
-        ### Data selection / conversion
         row_count += rspan
         layout.addWidget(self.select_data_file, row_count, col1, rspan, cspan1)
         layout.addWidget(self.convert_data_button, row_count, col2, rspan, cspan2)
@@ -170,13 +151,11 @@ class SettingsBox(QtWidgets.QGroupBox):
             self.on_data_file_path_changed
         )
 
-
         # Add small vertical space for visual grouping
         row_count += rspan
         layout.addWidget(QtWidgets.QWidget(), row_count, 0, 1, dbl)
         row_count += 1
 
-        ### Results path
         layout.addWidget(
             self.select_results_directory, row_count, col1, rspan, cspan1
             )
@@ -191,13 +170,11 @@ class SettingsBox(QtWidgets.QGroupBox):
             self.on_results_directory_changed
         )
 
-
         # Add small vertical space for visual grouping
         row_count += rspan
         layout.addWidget(QtWidgets.QWidget(), row_count, 0, 1, dbl)
         row_count += 1
 
-        ### Probe selection
         layout.addWidget(self.probe_layout_text, row_count, col1, rspan, cspan1)
         layout.addWidget(
             self.probe_preview_button, row_count, col2, rspan, cspan2)
@@ -206,29 +183,23 @@ class SettingsBox(QtWidgets.QGroupBox):
 
         row_count += rspan
         layout.addWidget(self.probe_layout_selector, row_count, col1, rspan, dbl)
-        self.probe_layout_selector.textActivated.connect(
+        #self.probe_layout_selector.setSizeAdjustPolicy(
+        #    QtWidgets.QComboBox.AdjustToMinimumContentsLength
+        #)
+        self.probe_layout_selector.currentTextChanged.connect(
             self.on_probe_layout_selected
         )
-
-        row_count += rspan
-        layout.addWidget(self.bad_channels_text, row_count, col1, rspan, cspan1)
-        layout.addWidget(self.bad_channels_input, row_count, col2, rspan, cspan2)
-        self.bad_channels_input.editingFinished.connect(self.update_bad_channels)
-        self.bad_channels_text.setToolTip(
-            "A list of channel indices (rows in the binary file) that should "
-            "not be included in sorting.\nListing channels here is equivalent to "
-            "excluding them from the probe dictionary."
-            )
-
 
         # Add small vertical space for visual grouping
         row_count += rspan
         layout.addWidget(QtWidgets.QWidget(), row_count, 0, 1, dbl)
         row_count += 1
 
-        ### Settings
         layout.addWidget(self.dtype_selector_text, row_count, col1, rspan, cspan1)
         layout.addWidget(self.dtype_selector, row_count, col2, rspan, cspan2)
+        #self.dtype_selector.setSizeAdjustPolicy(
+        #    QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLength
+        #)
         self.dtype_selector.currentTextChanged.connect(
             self.on_data_dtype_selected
         )
@@ -236,6 +207,9 @@ class SettingsBox(QtWidgets.QGroupBox):
         row_count += rspan
         layout.addWidget(self.device_selector_text, row_count, col1, rspan, cspan1)
         layout.addWidget(self.device_selector, row_count, col2, rspan, cspan2)
+        #self.device_selector.setSizeAdjustPolicy(
+        #    QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLength
+        #)
         self.device_selector.currentTextChanged.connect(
             self.on_device_selected
         )
@@ -250,8 +224,6 @@ class SettingsBox(QtWidgets.QGroupBox):
                 )
             inp = getattr(self, f'{k}_input')
             inp.editingFinished.connect(self.update_parameter)
-            if k in _PROBE_SETTINGS:
-                inp.editingFinished.connect(self.show_probe_layout())
 
         row_count += rspan
         layout.addWidget(
@@ -270,7 +242,6 @@ class SettingsBox(QtWidgets.QGroupBox):
             self.export_settings_button, row_count, col2, rspan, cspan2
             )
         self.export_settings_button.clicked.connect(self.export_settings)
-
 
         self.setLayout(layout)
         self.set_cached_field_values()
@@ -444,17 +415,16 @@ class SettingsBox(QtWidgets.QGroupBox):
             self.disable_load()
 
     def on_data_file_path_changed(self):
-        self.path_check = None
         data_file_path = Path(self.data_file_path_input.text())
         try:
             assert self.check_valid_binary_path(data_file_path)
-            self.data_file_path = data_file_path
-            self.gui.qt_settings.setValue('data_file_path', data_file_path)
 
             parent_folder = data_file_path.parent
             results_folder = parent_folder / "kilosort4"
             self.results_directory_input.setText(results_folder.as_posix())
             self.results_directory_input.editingFinished.emit()
+            self.data_file_path = data_file_path
+            self.gui.qt_settings.setValue('data_file_path', data_file_path)
 
             if self.check_settings():
                 self.enable_load()
@@ -465,28 +435,20 @@ class SettingsBox(QtWidgets.QGroupBox):
             self.disable_load()
 
     def check_valid_binary_path(self, filename):
-        if self.path_check is not None:
-            # Flag is set to False when path changes, this is to avoid checking
-            # the path repeatedly for no reason.
-            return self.path_check
-
         if filename is None:
             print('Binary path is None.')
-            check = False
+            return False
         else:
             f = Path(filename)
             if f.exists() and f.is_file():
                 if f.suffix in _ALLOWED_FILE_TYPES or self.use_file_object:
-                    check = True
+                    return True
                 else:
                     print(f'Binary file has invalid suffix. Must be {_ALLOWED_FILE_TYPES}')
-                    check = False
+                    return False
             else:
                 print('Binary file does not exist at that path.')
-                check = False
-        
-        self.path_check = check
-        return check
+                return False
 
     def disable_all_input(self, value):
         for button in self.buttons:
@@ -525,11 +487,12 @@ class SettingsBox(QtWidgets.QGroupBox):
             return False
 
         none_allowed = [
-            'dmin', 'nt0min', 'x_centers', 'shift', 'scale', 'max_channel_distance'
+            'dmin', 'nt0min', 'max_channel_distance', 'x_centers',
+            'shift', 'scale'
             ]
         for k, v in self.settings.items():
             if v is None and k not in none_allowed:
-                logger.info(f'`None` not allowed for parameter {k}.')
+                print(f'`None` not allowed for parameter {k}.')
                 return False
         return True
     
@@ -555,15 +518,15 @@ class SettingsBox(QtWidgets.QGroupBox):
 
     def get_probe_template_args(self):
         epw = self.extra_parameters_window
-        template_args = [getattr(epw, k) for k in _PROBE_SETTINGS]
+        template_args = [
+            epw.nearest_chans, epw.dmin, epw.dminx, 
+            epw.max_channel_distance, epw.x_centers, self.gui.device
+            ]
         return template_args
 
     @QtCore.Slot()
     def show_probe_layout(self):
-        if self.check_settings:
-            self.previewProbe.emit()
-        else:
-            logger.info("Cannot preview probe layout, invalid settings.")
+        self.previewProbe.emit(self.probe_layout, self.get_probe_template_args())
 
     @QtCore.Slot(str)
     def on_probe_layout_selected(self, name):
@@ -690,32 +653,6 @@ class SettingsBox(QtWidgets.QGroupBox):
         self.gui.qt_settings.setValue('probe_layout', layout)
         self.gui.qt_settings.setValue('probe_name', name)
 
-    def get_bad_channels(self):
-        text = self.bad_channels_input.text()
-        text = text.replace(']','').replace('[','').replace(' ','')
-        if len(text) > 0:
-            bad_channels = [int(s) for s in text.split(',')]
-        else:
-            bad_channels = []
-        
-        return bad_channels
-
-    def set_bad_channels(self, bad_channels):
-        self.bad_channels_input.setText(str(bad_channels))
-        self.bad_channels_input.editingFinished.emit()
-
-    @QtCore.Slot()
-    def update_bad_channels(self):
-        # Remove brackets and white space if present, convert to list of ints.
-        self.bad_channels = self.get_bad_channels()
-        self.gui.qt_settings.setValue('bad_channels', self.bad_channels)
-
-        # Trigger update so that probe layout in main gets updated, then
-        # refresh probe view.
-        self.update_settings()
-        self.previewProbe.emit()
-
-
     def on_data_dtype_selected(self, data_dtype):
         self.data_dtype = data_dtype
         self.gui.qt_settings.setValue('data_dtype', data_dtype)
@@ -807,7 +744,6 @@ class SettingsBox(QtWidgets.QGroupBox):
     def reset(self):
         self.data_file_path_input.clear()
         self.data_file_path = None
-        self.path_check = None
         self.gui.qt_settings.setValue('data_file_path', None)
         self.results_directory_input.clear()
         self.results_directory_path = None
@@ -864,8 +800,6 @@ class ExtraParametersWindow(QtWidgets.QWidget):
             layout.addWidget(getattr(self, f'{k}_input'), row_count, col+3, 1, 2)
             inp = getattr(self, f'{k}_input')
             inp.editingFinished.connect(self.update_parameter)
-            if k in _PROBE_SETTINGS:
-                inp.editingFinished.connect(self.main_settings.show_probe_layout)
 
         self.setLayout(layout)
 
